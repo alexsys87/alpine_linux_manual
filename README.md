@@ -230,6 +230,9 @@ https://dl-cdn.alpinelinux.org/alpine/v3.20/main
 https://dl-cdn.alpinelinux.org/alpine/v3.20/community
 EOF
 
+echo "nameserver 1.1.1.1" > /etc/resolv.conf
+echo "nameserver 8.8.8.8" >> /etc/resolv.conf
+
 apk update
 apk upgrade
 ```
@@ -922,6 +925,7 @@ mount -t sysfs none "$ROOTFS/sys"
 mount -o bind /dev "$ROOTFS/dev"
 mount -o bind /dev/pts "$ROOTFS/dev/pts"
 
+cp -L /etc/resolv.conf "$ROOTFS/etc/resolv.conf"
 chroot "$ROOTFS" /bin/sh -c '
     set -e
     apk update && apk upgrade
