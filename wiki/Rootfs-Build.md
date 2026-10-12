@@ -30,8 +30,12 @@ sudo parted -s "$SDCARD" set 1 boot on
 sudo parted -s "$SDCARD" mkpart primary ext4 260MiB 100%
 sudo partprobe "$SDCARD"
 
-sudo mkfs.vfat -F 32 -n BOOT "${SDCARD}1"     # для mmcblk: "${SDCARD}p1"
-sudo mkfs.ext4 -L rootfs "${SDCARD}2"         # для mmcblk: "${SDCARD}p2"
+case "$SDCARD" in *[0-9]) PART_PREFIX="${SDCARD}p" ;; *) PART_PREFIX="$SDCARD" ;; esac
+export BOOT_PART="${PART_PREFIX}1" ROOT_PART="${PART_PREFIX}2"
+sudo udevadm settle  # на хосте с udev; в контейнере создание /dev-узлов может быть недоступно
+test -b "$BOOT_PART" && test -b "$ROOT_PART" || { echo "Разделы ещё не доступны"; exit 1; }
+sudo mkfs.vfat -F 32 -n BOOT "$BOOT_PART"
+sudo mkfs.ext4 -L rootfs "$ROOT_PART"
 ```
 
 Отступ 4 МиБ от начала карты — стандартная практика выравнивания под erase-block; первый раздел не должен начинаться с сектора 0.
@@ -81,10 +85,10 @@ sudo ./apk.static \
 
 - `--arch armv7` — целевая архитектура пакетов (не хоста!).
 - `-X <url>` — источник пакетов; указываем main и community отдельно, оба нужны для дальнейшей установки пакетов вроде `openssh`, `chrony` и т.д.
-- `-U --allow-untrusted` — на этом шаге в чистом каталоге ещё нет доверенных ключей подписи Alpine, поэтому первичная установка идёт без проверки подписи APKINDEX. Пакет `alpine-keys` при этом устанавливается вместе с `alpine-base`, и **все последующие** `apk add` внутри уже готовой системы будут проходить с полной проверкой подписи — `--allow-untrusted` используется только один раз, на bootstrap.
+- `-U --allow-untrusted` — на этом шаге в чистом каталоге ещё нет доверенных ключей подписи Alpine, поэтому первичная установка идёт без проверки подписей индекса **и пакетов**. Пакет `alpine-keys` при этом устанавливается вместе с `alpine-base`, и **все последующие** `apk add` внутри уже готовой системы будут проходить с полной проверкой подписи — `--allow-untrusted` используется только один раз, на bootstrap.
 - `--initdb` — инициализировать базу данных apk в новом `--root`.
 
-После этой команды `rootfs/` содержит минимальную систему, аналогичную результату Способа A.
+После этой команды `rootfs/` содержит `alpine-base`, включая OpenRC и служебные пакеты BusyBox. Способ A даёт более минимальный набор; следующий раздел добавляет недостающие компоненты.
 
 ## 4. Настройка системы внутри rootfs
 
@@ -106,7 +110,7 @@ apk upgrade
 ### 4.2 Базовый набор пакетов
 
 ```sh
-apk add openrc alpine-conf \
+apk add alpine-base openrc alpine-conf \
     e2fsprogs e2fsprogs-extra dosfstools parted util-linux \
     kmod \
     openssh chrony tzdata \
@@ -156,7 +160,10 @@ mkdir -p /boot
 sed -i '/^tty[2-6]::/d' /etc/inittab
 grep -q '^ttyPS0::' /etc/inittab || \
     echo 'ttyPS0::respawn:/sbin/getty -L 115200 ttyPS0 vt100' >> /etc/inittab
+grep -qxF ttyPS0 /etc/securetty || echo ttyPS0 >> /etc/securetty
 ```
+
+Последняя строка разрешает вход **root через физическую UART-консоль**. Без неё Alpine может сразу ответить `Login incorrect`, даже при правильном пароле. Это не разрешает парольный вход root по SSH: для SSH настройте ключи либо обычного пользователя отдельно.
 
 ### 4.5 Сеть
 
@@ -195,6 +202,14 @@ echo "Europe/Moscow" > /etc/timezone
 Стандартный для Alpine набор сервисов по runlevel’ам:
 
 ```sh
+rc-update add devfs sysinit
+rc-update add dmesg sysinit
+rc-update add mdev sysinit
+rc-update add hwdrivers sysinit
+
+rc-update add fsck boot
+rc-update add root boot
+rc-update add localmount boot
 rc-update add hostname boot
 rc-update add bootmisc boot
 rc-update add hwclock boot
@@ -212,7 +227,7 @@ rc-update add mount-ro shutdown
 rc-update add savecache shutdown
 ```
 
-(`devfs`/`mdev`/`dmesg` в уровень `sysinit` Alpine добавляет автоматически при установке `openrc`/`mdev-conf` — проверить текущий список можно командой `rc-update show`).
+Самой установки пакетов недостаточно для гарантированного наполнения runlevel: добавляйте службы явно, как выше. `alpine-base` нужен и для minirootfs: он устанавливает `busybox-openrc` (служба `syslog`) и `busybox-mdev-openrc` (служба `mdev`). `root` перемонтирует корень, `localmount` обрабатывает fstab. Проверьте список: `rc-update show`. Если на плате нет RTC, вместо `hwclock` выберите `swclock`.
 
 Завершение работы с chroot:
 

@@ -23,7 +23,7 @@
 
 По умолчанию README.md разворачивает rootfs на обычный ext4-раздел, доступный на запись (`root=/dev/mmcblk0p2 rw`) — это самый простой вариант, но SD-карты плохо переживают внезапное отключение питания во время записи: даже журналируемый ext4 не гарантирует целостность, если питание пропало посреди записи метаданных. Embedded-устройства обычно выключают именно так — по питанию, а не через `poweroff`.
 
-Стандартное решение — сделать корень **read-only** через SquashFS (сжатая, в принципе доступная только для чтения ФС) и добавить сверху записываемый слой через **OverlayFS**, куда уходят все runtime-изменения. На «боевой» read-only раздел ничего не пишется напрямую — значит, ему физически нечем повредиться при обрыве питания.
+Стандартное решение — сделать корень **read-only** через SquashFS (сжатая, доступная только для чтения ФС) и добавить сверху записываемый слой через **OverlayFS**, куда уходят все runtime-изменения. Это исключает записи в базовую ФС во время обычной работы, но не гарантирует сохранность самой SD-карты: сбой её контроллера, износ или обрыв питания во время обновления образа могут повредить и read-only данные.
 
 ## 2. Общая схема
 
@@ -42,7 +42,7 @@ flowchart TB
 |---|---|---|
 | upperdir/workdir | tmpfs (RAM) | ext4 на отдельном разделе SD-карты |
 | Изменения переживают перезагрузку? | Нет — при каждой загрузке система «как новая» | Да |
-| Риск повреждения при обрыве питания | Практически нулевой (RAM просто исчезает, boot- и squashfs-разделы read-only) | Overlay-раздел теоретически может повредиться, но «боевая» squashfs — никогда; в худшем случае теряются только runtime-изменения, а не вся система |
+| Риск повреждения при обрыве питания | Нет runtime-записей в корень на SD (RAM исчезает); аппаратные сбои носителя всё ещё возможны | Записываемый ext4 может повредиться и помешать загрузке; базовый squashfs не изменяется программно, но от сбоя SD не защищён |
 | Когда уместно | Устройство не обязано помнить состояние (либо важные данные хранятся отдельно, см. раздел 10) | Нужны логи/конфиг/данные между перезагрузками |
 
 Ниже описаны оба варианта — отличаются только тем, что именно монтируется как upperdir в скрипте `/init` (раздел 7.3).
@@ -56,8 +56,13 @@ flowchart TB
 | `CONFIG_SQUASHFS=y` | Поддержка SquashFS |
 | `CONFIG_SQUASHFS_ZSTD=y` | Компрессия zstd — хороший баланс скорости распаковки и степени сжатия для Cortex-A9 (в `multi_v7_defconfig` обычно по умолчанию включена только `CONFIG_SQUASHFS_ZLIB`) |
 | `CONFIG_OVERLAY_FS=y` | Поддержка OverlayFS |
+| `CONFIG_TMPFS=y`, `CONFIG_TMPFS_XATTR=y` | tmpfs для backing mounts и upper варианта A; xattr необходимы для корректных copy-up/whiteout. Без них при удалении lower-файлов возможен `I/O error` |
+| `CONFIG_PROC_FS=y`, `CONFIG_SYSFS=y` | Псевдо-ФС, которые монтирует `/init` |
 | `CONFIG_BLK_DEV_INITRD=y` | Поддержка загрузки initramfs/initrd ядром — без неё загруженный initramfs будет просто проигнорирован |
+| `CONFIG_RD_GZIP=y` | Распаковка gzip-сжатого cpio из раздела 7.4 |
 | `CONFIG_DEVTMPFS=y` | Автозаполнение `/dev` в initramfs без mdev (обычно уже включено в `multi_v7_defconfig`) |
+
+Драйверы MMC/SD Zynq (`CONFIG_MMC`, `CONFIG_MMC_BLOCK`, `CONFIG_MMC_SDHCI`, `CONFIG_MMC_SDHCI_PLTFM`, `CONFIG_MMC_SDHCI_OF_ARASAN`), а для варианта B также `CONFIG_EXT4_FS`, должны быть встроены (`=y`): этот минимальный initramfs не содержит модулей и не запускает `modprobe`.
 
 ## 5. Разметка SD-карты
 
@@ -71,6 +76,10 @@ flowchart TB
 
 ```bash
 export SDCARD=/dev/sdX   # ЗАМЕНИТЕ на реальное устройство!
+
+# ВНИМАНИЕ: далее уничтожается разметка и содержимое выбранной карты.
+# Сначала размонтируйте все её разделы и проверьте устройство через lsblk.
+# Суффиксы ниже рассчитаны на /dev/sdX; для /dev/mmcblkN нужны p1/p2/p3.
 
 sudo parted -s "$SDCARD" mklabel msdos
 sudo parted -s "$SDCARD" mkpart primary fat32 4MiB 260MiB
@@ -90,9 +99,12 @@ sudo mkfs.ext4 -L overlay "${SDCARD}3"   # только вариант B
 Из уже собранной по README.md (разделы 1–9) rootfs:
 
 ```bash
-apk add squashfs-tools     # внутри chroot; на Debian/Ubuntu-хосте — apt-get install squashfs-tools
-mksquashfs "$ROOTFS" rootfs.squashfs -comp zstd -b 256K -noappend
+# На Debian/Ubuntu-хосте, не внутри ARM-chroot:
+sudo apt-get install squashfs-tools cpio gzip u-boot-tools
+sudo mksquashfs "$ROOTFS" rootfs.squashfs -comp zstd -b 256K -noappend
 ```
+
+Перед сборкой выйдите из chroot и размонтируйте bind mount `/dev`, `/proc`, `/sys` и прочие временные ФС внутри `$ROOTFS`: они не должны попасть в образ. В `$ROOTFS/etc/fstab` не оставляйте старую запись `/dev/mmcblk0p2 / ext4 ...` и автоматическое монтирование разделов 2/3, уже занятых initramfs. Альтернатива на Alpine-хосте — `apk add squashfs-tools`; `$ROOTFS` здесь всегда путь к исходному дереву на хосте, не путь внутри chroot.
 
 `-comp zstd` — быстрая распаковка на Cortex-A9 при хорошей степени сжатия (не забудьте `CONFIG_SQUASHFS_ZSTD=y` из раздела 4, иначе ядро не сможет смонтировать такой образ); `-b 256K` — размер блока (крупнее — чуть лучше сжатие, чуть больше RAM на кэш блоков при чтении).
 
@@ -123,7 +135,7 @@ apk info -L busybox-static
 ```bash
 mkdir -p initramfs
 mkdir -p initramfs/bin initramfs/proc initramfs/sys initramfs/dev
-mkdir -p initramfs/mnt/lower initramfs/mnt/upper initramfs/mnt/work initramfs/mnt/newroot
+mkdir -p initramfs/mnt initramfs/newroot
 
 cp "$ROOTFS"/bin/busybox.static initramfs/bin/busybox   # имя файла — см. 7.1
 chmod +x initramfs/bin/busybox
@@ -134,36 +146,65 @@ chmod +x initramfs/bin/busybox
 ```sh
 cat > initramfs/init << 'EOF'
 #!/bin/busybox sh
+set -eu
+export PATH=/bin:/sbin
 /bin/busybox --install -s /bin
+rescue() {
+    echo 'initramfs: ошибка загрузки; аварийная shell (exit не продолжает загрузку)' >&2
+    exec /bin/busybox sh
+}
+trap rescue EXIT
+
+wait_device() {
+    n=0
+    while [ ! -b "$1" ]; do
+        n=$((n + 1))
+        [ "$n" -lt 30 ] || return 1
+        sleep 1
+    done
+}
 
 mount -t proc none /proc
 mount -t sysfs none /sys
 mount -t devtmpfs none /dev
 
+wait_device /dev/mmcblk0p2
+# Отдельная точка монтирования позволяет перенести всё дерево backing mounts.
+mount -t tmpfs -o size=1M tmpfs /mnt
+mkdir -p /mnt/lower /mnt/upper
 mount -t squashfs -o ro /dev/mmcblk0p2 /mnt/lower
 
 # --- Вариант A: stateless (tmpfs) ---
 mount -t tmpfs tmpfs /mnt/upper
-# --- Вариант B: persistent -- закомментируйте строку выше и раскомментируйте эту:
+# --- Вариант B: persistent -- закомментируйте mount tmpfs выше и включите обе строки:
+# wait_device /dev/mmcblk0p3
 # mount -t ext4 /dev/mmcblk0p3 /mnt/upper
 
 mkdir -p /mnt/upper/data /mnt/upper/work
 mount -t overlay overlay \
     -o lowerdir=/mnt/lower,upperdir=/mnt/upper/data,workdir=/mnt/upper/work \
-    /mnt/newroot
+    /newroot
 
-exec switch_root /mnt/newroot /sbin/init
+test -x /newroot/sbin/init
+mkdir -p /newroot/mnt /newroot/dev /newroot/proc /newroot/sys
+mount --move /mnt /newroot/mnt
+mount --move /dev /newroot/dev
+mount --move /proc /newroot/proc
+mount --move /sys /newroot/sys
+exec switch_root /newroot /sbin/init
 EOF
 chmod +x initramfs/init
 ```
 
 `switch_root` (апплет busybox) должен вызываться именно из initramfs — это отдельная временная rootfs-в-RAM, которую ядро распаковывает по указанию бутлоадера ещё до монтирования настоящего корня.
 
+При ошибке скрипт останавливается в аварийной shell, а не продолжает загрузку с неверным корнем. Ожидание устройств ограничено примерно 30 секундами; `rootwait` ядра не заменяет это ожидание в пользовательском `/init`. Перенос `/dev`, `/proc`, `/sys` сохраняет их после смены корня, а `/mnt` делает backing mounts доступными для диагностики. Для persistent-варианта при повреждении ext4 сначала нужна его офлайн-проверка/восстановление; автоматического `fsck` или отката на tmpfs здесь нет. Размер tmpfs upper по умолчанию ограничен половиной RAM; запись больших файлов и `apk add` расходуют память, а не место на SD.
+
 ### 7.4 Упаковка и обёртка под U-Boot
 
 ```bash
 cd initramfs
-find . | cpio -o -H newc | gzip -9 > ../initramfs.cpio.gz
+find . -print0 | cpio --null -o -H newc --owner=0:0 | gzip -9 > ../initramfs.cpio.gz
 cd ..
 mkimage -A arm -O linux -T ramdisk -C gzip -d initramfs.cpio.gz uInitrd
 ```
@@ -182,6 +223,8 @@ bootm 0x03000000 0x04000000 0x02A00000
 
 Ключевое отличие от README.md §12: вместо `-` (нет ramdisk) теперь реальный адрес `uInitrd`, а в `bootargs` **не нужны** `root=`/`rootwait` — какой раздел монтировать как корень теперь решает сам initramfs (раздел 7.3), а не ядро напрямую через `root=`.
 
+Адреса приведены как пример: проверьте по размерам файлов и карте RAM, что ядро, dtb, initramfs и области распаковки не перекрываются. Для `zImage` используется `bootz`, а способ передачи ramdisk (legacy `uInitrd` либо raw cpio с `адрес:размер`) зависит от конфигурации U-Boot. Эти команды не заменяют проверку на конкретной плате.
+
 ## 9. Первая загрузка и проверка
 
 После входа стоит убедиться, что корень действительно overlay:
@@ -192,17 +235,20 @@ mount | grep -E 'overlay| / '
 
 Ожидаемая строка — что-то вроде `overlay on / type overlay (rw,...,lowerdir=/mnt/lower,upperdir=...)`.
 
-Проверка устойчивости к обрыву питания: создайте файл, `sync`, обесточьте плату (не через `poweroff`!) во время какой-нибудь фоновой записи, включите заново — при варианте A файл исчезнет (это и есть цель: система гарантированно грузится «как новая»), при варианте B должен сохраниться, а сам корень в любом случае останется исправным в обоих вариантах.
+Сначала проверьте обычную перезагрузку: создайте файл, выполните `sync`, перезагрузитесь — при варианте A файл исчезнет, при варианте B должен сохраниться. Испытания обрывом питания проводите только на запасной карте с резервной копией: они могут повредить SD/записываемый ext4, и ни сохранность файла, ни успешная загрузка не гарантированы. Одного такого испытания недостаточно для доказательства устойчивости.
 
 ## 10. Персистентность при stateless-варианте
 
 Полностью stateless-система обычно всё равно не может позволить себе терять абсолютно всё (ключи SSH-хоста, накопленные данные приложения). Практичный подход — держать *отдельные* пути на persistent-хранилище через bind mount поверх уже собранного overlay, ещё до запуска основных сервисов:
 
 ```sh
-mount /dev/mmcblk0p3 /mnt/data
+mkdir -p /mnt/data /var/lib/myapp
+mount -t ext4 /dev/mmcblk0p3 /mnt/data
 mkdir -p /mnt/data/var-lib-myapp
 mount --bind /mnt/data/var-lib-myapp /var/lib/myapp
 ```
+
+Для этой комбинации нужен третий ext4-раздел даже при tmpfs-upper (раздел 5). Не используйте одновременно раздел 3 как upper и как отдельное data-хранилище. Сервис должен зависеть от `localmount` и запускаться до приложения; сам bind mount без существующего целевого каталога завершается ошибкой.
 
 Такой bind mount можно сделать отдельным ранним OpenRC-сервисом (по образцу README.md §15.8) — тогда для приложения путь `/var/lib/myapp` выглядит как обычная директория, но физически она на persistent-разделе, а всё остальное дерева `/` при перезагрузке сбрасывается.
 
@@ -218,7 +264,9 @@ mount --bind /mnt/data/var-lib-myapp /var/lib/myapp
 
 ## 12. Обновление образа
 
-Поменяли что-то в rootfs (README.md §9) или добавили свой пакет (`PACKAGING.md`) — пересоберите squashfs и перезалейте раздел 2 (разделы 6–7 этого документа заново). Initramfs пересобирать нужно только при изменении самой логики overlay/разметки разделов, а не при обычных обновлениях содержимого rootfs.
+Поменяли что-то в rootfs (README.md §9) или добавили свой пакет (`PACKAGING.md`) — пересоберите squashfs и перезалейте раздел 2 (раздел 6). Initramfs пересобирать нужно только при изменении самой логики overlay/разметки разделов, а не при обычных обновлениях содержимого rootfs.
+
+Нельзя выполнять `dd` поверх squashfs, который сейчас смонтирован как lower работающего корня: загрузитесь с другого носителя/в recovery либо обновляйте карту на хосте при размонтированных разделах. Обрыв питания при `dd` оставит неполный, незагрузочный образ; для атомарных обновлений нужна отдельная A/B-схема. Persistent-upper может скрывать новые файлы lower старыми копиями и whiteout: перед обновлением предусмотрите резервное копирование данных и сброс/миграцию upper/work при размонтированном overlay.
 
 ## 13. Типичные ошибки
 
@@ -226,7 +274,7 @@ mount --bind /mnt/data/var-lib-myapp /var/lib/myapp
 |---|---|---|
 | `VFS: Cannot open root device` / initramfs не запускается вовсе | Забыт `CONFIG_BLK_DEV_INITRD=y`, либо `uInitrd` не указан в `bootm`/`bootz` | Раздел 4 (конфиг ядра), раздел 8 (адрес в `bootm`) |
 | `mount: mounting /dev/mmcblk0p2 on /mnt/lower failed: Invalid argument` | `CONFIG_SQUASHFS`/`CONFIG_SQUASHFS_ZSTD` не собраны в ядро, либо раздел 2 не содержит squashfs-образ | Раздел 4; проверить, что раздел 2 действительно залит образом (раздел 6) |
-| `switch_root: failed to mount moving /mnt/newroot to /: Invalid argument` | `mount -t overlay` не отработал (упал раньше по цепочке), либо скрипт запускается не из initramfs | Проверить каждую строку `/init` по отдельности (раздел 7.3); `switch_root` работает только из initramfs |
+| `switch_root: failed to mount moving /newroot to /: Invalid argument` | `mount -t overlay` не отработал (упал раньше по цепочке), либо скрипт запускается не из initramfs | Проверить каждую строку `/init` по отдельности (раздел 7.3); `switch_root` работает только из initramfs |
 | Изменения пропадают при варианте B (должны сохраняться) | В `/init` активна строка `mount -t tmpfs` вместо `mount -t ext4 /dev/mmcblk0p3` | Раздел 7.3 — раскомментировать нужный вариант |
 | `Kernel panic - not syncing: Attempted to kill init` сразу после `switch_root` | В squashfs нет `/sbin/init` — скорее всего, в `mksquashfs` (раздел 6) попал не тот каталог | Проверить содержимое `$ROOTFS` перед сборкой образа |
 | `apk add` и обычная работа с пакетами не работают | Read-only тут ни при чём — overlay сам по себе полностью доступен на запись; ищите обычные причины (сеть, репозитории) как в README.md §16 | — |

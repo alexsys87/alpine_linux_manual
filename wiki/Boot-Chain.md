@@ -2,7 +2,7 @@
 
 Как устроена загрузка Zynq-7010 (BootROM → FSBL/SPL → U-Boot → ядро → rootfs) и как собрать все компоненты загрузочной цепочки: FSBL, U-Boot (включая путь через SPL), Device Tree, ядро Linux, `BOOT.BIN`, а также сценарии загрузки U-Boot.
 
-rootfs сама по себе не загрузится: нужны FSBL, U-Boot, ядро и dtb, уложенные на FAT-раздел согласно схеме из [раздела 1](#1-как-устроена-загрузка-zynq-7010). Здесь — минимально достаточный маршрут; каждый из компонентов при желании тюнится отдельно и заметно глубже, чем это уместно в мануале про rootfs.
+rootfs сама по себе не загрузится: нужны FSBL или SPL, U-Boot, ядро и dtb, уложенные на FAT-раздел согласно схеме из [раздела 1](#1-как-устроена-загрузка-zynq-7010). Здесь — минимально достаточный маршрут; каждый из компонентов при желании тюнится отдельно и заметно глубже, чем это уместно в мануале про rootfs.
 
 ## Оглавление
 
@@ -31,7 +31,7 @@ flowchart LR
 
 Пошагово:
 
-1. **BootROM** — неизменяемый код в кристалле. При старте читает состояние MIO-пинов (boot mode) и загружает следующий образ. Для загрузки с SD-карты типичная комбинация MIO — `00110`; на большинстве отладочных плат это заводское положение джампера (например, `JP5=SD` на Zybo Z7).
+1. **BootROM** — неизменяемый код в кристалле. При старте читает состояние MIO-пинов (boot mode) и загружает следующий образ. Для Zynq-7000 значение SD boot mode — `0x5` (младшие четыре бита `0101`); положение джамперов и порядок подписанных MIO сверяйте с руководством именно вашей платы.
 2. **FSBL** (First Stage Boot Loader) — считывается из файла `BOOT.BIN` на первом разделе SD-карты (FAT32), выполняется в OCM. Инициализирует DDR-контроллер, тактирование, MIO, опционально конфигурирует PL битстримом, затем передаёт управление SSBL.
 3. **U-Boot** (SSBL, second stage) — полноценный загрузчик: консоль, сеть, работа с SD/QSPI, переменные окружения, скрипты `boot.scr`/`uEnv.txt`. Загружает ядро, Device Tree Blob и (если используется) initramfs в DDR и передаёт управление ядру.
 4. **Ядро Linux** распаковывается, инициализирует драйверы согласно Device Tree, монтирует корневую ФС по параметру `root=` из `bootargs` — это и есть та самая Alpine rootfs со второго раздела SD-карты (ext4), и запускает `/sbin/init` (OpenRC).
@@ -40,7 +40,7 @@ flowchart LR
 
 | № раздела | ФС | Назначение | Типичный размер |
 |---|---|---|---|
-| 1 | FAT32, флаг boot | `BOOT.BIN`, `uImage`/`zImage`, `*.dtb`, `boot.scr`/`uEnv.txt` | 128–256 МБ |
+| 1 | FAT32, флаг boot | `BOOT.BIN`, **также `u-boot.img` для SPL-пути**, `uImage`/`zImage`, `*.dtb`, `boot.scr`/`uEnv.txt` | 128–256 МБ |
 | 2 | ext4 | Alpine rootfs (`/`) | остальное место на карте |
 
 ## 2. Кросс-компилятор
@@ -78,6 +78,13 @@ cd u-boot
 git checkout v2026.04     # актуальный стабильный тег смотрите на source.denx.de/u-boot/u-boot/-/tags
 ```
 
+Помимо кросс-компилятора, для этого тега на Debian нужны инструменты сборки и host-зависимости:
+
+```bash
+sudo apt-get install build-essential bison flex libssl-dev libgnutls28-dev \
+    python3 python3-dev python3-setuptools swig device-tree-compiler
+```
+
 ### 4.2 FSBL или SPL: два пути к первой стадии загрузки
 
 У Zynq-7000 (в отличие от ZynqMP, где это не работает) есть выбор, чем грузить U-Boot: штатным Xilinx-FSBL ([раздел 3](#3-fsbl)) или собственным SPL самого U-Boot, который может полностью заменить FSBL.
@@ -88,23 +95,20 @@ git checkout v2026.04     # актуальный стабильный тег с�
 | Поддержка Xilinx | официальная | нет — в документации Xilinx прямо помечено как "for completeness, not supported"; тем не менее рабочий и распространённый community-путь именно для Zynq-7000 |
 | Нужен `ps7_init_gpl.c` | не нужен (инициализацию PS делает сам FSBL) | нужен — но для популярных плат (Zedboard, MicroZed, ZC706, Zybo и др.) он уже лежит в дереве U-Boot, `board/xilinx/zynq/<board>/` |
 | Загрузка битстрима PL до Linux | да, штатно через `boot.bif` | через команду `fpga load` в самом U-Boot, либо позже из Linux ([раздел 6.5](#65-динамическая-загрузка-pl-из-linux-fpga-manager)) |
-| Итоговый `BOOT.BIN` | собирается `bootgen`'ом ([раздел 8](#8-сборка-bootbin-bootgen)) | это и есть `spl/boot.bin` — просто скопировать/переименовать, ничего собирать дополнительно не нужно |
+| Итоговый `BOOT.BIN` | собирается `bootgen`'ом ([раздел 8](#8-сборка-bootbin-bootgen)) | `spl/boot.bin` переименовывается в `BOOT.BIN`; **это только SPL**, рядом на FAT обязательно нужен `u-boot.img` |
 
 Для знакомства с платформой и большинства популярных плат — путь через SPL проще и не требует Xilinx-инструментов вообще. FSBL-путь оставляйте для случаев, где нужно штатно зашивать битстрим PL в `BOOT.BIN` при каждой загрузке, либо когда для вашей платы в U-Boot нет готового `ps7_init_gpl.c` и генерировать его самому не хочется (тогда проще собрать FSBL в Vitis один раз).
 
 ### 4.3 Конфигурация (defconfig)
 
-Для Zynq-7000 с 2020.1+ есть общий defconfig `xilinx_zynq_virt_defconfig`, конкретная плата задаётся переменной `DEVICE_TREE`; либо, если для платы есть готовый board-defconfig — он обычно уже настроен под SPL и конкретный `ps7_init_gpl.c`:
+В проверенном mainline U-Boot v2026.04 используется общий defconfig `xilinx_zynq_virt_defconfig`, конкретная плата задаётся переменной `DEVICE_TREE`:
 
 ```bash
 make xilinx_zynq_virt_defconfig
 export DEVICE_TREE=zynq-zybo-z7      # имя платы под arch/arm/dts/, замените под вашу плату
 ```
 
-```bash
-# Альтернатива, если в дереве есть board-defconfig под вашу плату:
-make zynq_zybo_z7_defconfig
-```
+`zynq_zybo_z7_defconfig` в этом теге **нет**. В иных версиях/форках board-defconfig можно использовать только после проверки, что соответствующий файл существует в `configs/`.
 
 ### 4.4 Сборка
 
@@ -114,8 +118,14 @@ make -j"$(nproc)"
 
 Артефакты зависят от выбранного пути ([4.2](#42-fsbl-или-spl-два-пути-к-первой-стадии-загрузки)):
 
-- **SPL-путь**: `spl/boot.bin` (уже готовый `BOOT.BIN`, просто скопировать на SD — [раздел 1 страницы «Развёртывание и первая загрузка»](Deployment.md#1-перенос-rootfs-и-загрузочных-файлов-на-sd-карту)), `spl/u-boot-spl.bin`, `u-boot.img`.
-- **FSBL-путь**: `u-boot.elf` (пойдёт в `boot.bif` вместе с `fsbl.elf` — [раздел 8](#8-сборка-bootbin-bootgen)), `u-boot.img`.
+- **SPL-путь**: `spl/boot.bin` (BootROM-образ **только первой стадии**), `spl/u-boot-spl.bin`, `u-boot.img` (U-Boot proper). На первый FAT-раздел нужны **оба** файла: `spl/boot.bin` как `BOOT.BIN` и `u-boot.img` без переименования. В проверенном defconfig SPL ищет именно `u-boot.img` (`CONFIG_SPL_FS_LOAD_PAYLOAD_NAME`). Один `BOOT.BIN` не содержит U-Boot proper.
+- **FSBL-путь**: `u-boot.elf` (пойдёт в `boot.bif` вместе с `fsbl.elf` — [раздел 8](#8-сборка-bootbin-bootgen)); отдельный `u-boot.img` на SD для этого пути не требуется. Если SPL для платы не собирается, отключите `CONFIG_SPL` через `menuconfig`, затем пересоберите U-Boot.
+
+```bash
+# Только SPL-путь; BOOT — точка монтирования первого FAT-раздела:
+cp spl/boot.bin "$BOOT/BOOT.BIN"
+cp u-boot.img "$BOOT/u-boot.img"
+```
 
 ### 4.5 Своя плата или изменённая PL: собственный `ps7_init_gpl.c`
 
@@ -153,9 +163,9 @@ make -j"$(nproc)"
 |---|---|---|
 | `Please copy ps7_init.c/h from hw project` при сборке SPL | Для платы нет готового `ps7_init_gpl.c` в дереве U-Boot | Сгенерировать свой ([раздел 4.5](#45-своя-плата-или-изменённая-pl-собственный-ps7_init_gplc)) либо перейти на FSBL-путь ([3](#3-fsbl)) |
 | `saveenv` отрабатывает, но после перезагрузки значения теряются | Активный `CONFIG_ENV_IS_IN_*` не совпадает с реальным носителем загрузки (например, включён только `SPI_FLASH`, а грузитесь с SD) | Включить `CONFIG_ENV_IS_IN_FAT` для SD-загрузки в `menuconfig` ([раздел 4.6](#46-переменные-окружения-где-и-как-сохраняются)) |
-| После SPL — тишина, U-Boot proper не стартует | `ps7_init_gpl.c` не соответствует реальной ревизии платы/PL | Пересобрать/обновить `ps7_init_gpl.c` под точный `.xsa` ([4.5](#45-своя-плата-или-изменённая-pl-собственный-ps7_init_gplc)) |
+| После SPL — тишина, U-Boot proper не стартует | Отсутствует/неверен `u-boot.img` на FAT либо `ps7_init_gpl.c` не соответствует конфигурации PS | Сначала проверить наличие `u-boot.img` рядом с `BOOT.BIN`, затем обновить PS init под точный `.xsa` ([4.5](#45-своя-плата-или-изменённая-pl-собственный-ps7_init_gplc)) |
 | `DEVICE_TREE=...` не находится при сборке | Неверное имя платы в переменной | Сверить точное имя `.dts`-файла в `arch/arm/dts/` дерева U-Boot |
-| Плата не грузится ни по одному из путей | В `BOOT.BIN` перепутаны артефакты разных путей (например, `fsbl.elf` + `spl/boot.bin` вместе) | Выбрать один путь ([4.2](#42-fsbl-или-spl-два-пути-к-первой-стадии-загрузки)): либо `bootgen` с FSBL+`u-boot.elf`, либо просто переименованный `spl/boot.bin` — не смешивать |
+| Плата не грузится ни по одному из путей | В `BOOT.BIN` перепутаны артефакты разных путей (например, `fsbl.elf` + `spl/boot.bin` вместе) | Выбрать один путь ([4.2](#42-fsbl-или-spl-два-пути-к-первой-стадии-загрузки)): либо `bootgen` с FSBL+`u-boot.elf`, либо переименованный `spl/boot.bin` **и отдельный `u-boot.img`** — не смешивать |
 
 ## 5. Device Tree
 
@@ -173,10 +183,12 @@ make -j"$(nproc)"
 - **`github.com/Xilinx/linux-xlnx`** — форк AMD/Xilinx поверх mainline с доп. драйверами под их IP-ядра для PL (видео, DMA-контроллеры, специфичные кодеки и т.п.). Обычно на 1–2 релиза "младше" HEAD мейнлайна. Берите, если в PL стоит нестандартное Xilinx IP без драйвера в апстриме.
 
 ```bash
-git clone https://github.com/torvalds/linux.git
+git clone --depth 1 --branch v6.6.155 https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
 cd linux
-git checkout v6.6.155     # LTS-ветка, поддержка минимум до конца 2027; актуальный патч — kernel.org/category/releases.html
+# v6.6.155 — фиксированный пример stable/LTS, актуальные версии и сроки — kernel.org
 ```
+
+Патч-теги `v6.6.x` находятся в **stable/linux**, а не в `torvalds/linux`: команда `git checkout v6.6.155` после клонирования дерева Torvalds не сработает. Альтернатива для фиксированного примера — официальный архив `https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.6.155.tar.xz`.
 
 > Пакет `linux-lts` из репозитория Alpine ориентирован на массовые ARM-платы (Raspberry Pi и т.п.) и с высокой вероятностью не включает поддержку периферии Zynq PS (Cadence UART, GEM Ethernet, Arasan SDHCI) "из коробки" — поэтому для Zynq практически всегда нужна отдельная кросс-сборка ядра, а не `apk add linux-lts`.
 
@@ -184,7 +196,7 @@ git checkout v6.6.155     # LTS-ветка, поддержка минимум д
 
 ```bash
 make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- multi_v7_defconfig
-# либо, если брали форк Xilinx или хотите больше готовых Zynq-специфичных опций:
+# либо, только если брали форк Xilinx с этим defconfig:
 # make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- xilinx_zynq_defconfig
 ```
 
@@ -208,12 +220,18 @@ cp defconfig arch/arm/configs/my_zynq7010_defconfig
 | SPI (PS) | `CONFIG_SPI_CADENCE` | `spi-cadence` | SPI-периферия на PS |
 | Аппаратный watchdog | `CONFIG_CADENCE_WATCHDOG` | `cadence_wdt` | полезно для автовосстановления при зависании |
 | USB host/device | `CONFIG_USB_CHIPIDEA*` | `ci_hdrc` | контроллер ChipIdea; включайте `HOST`/`UDC` под нужный режим |
-| CAN (если есть на плате/в PL) | `CONFIG_CAN_XILINX_CAN` | `xilinx_can` | сверьте точное имя опции поиском `/` в menuconfig — в разных версиях ядра может отличаться |
+| CAN (если есть на плате/в PL) | `CONFIG_CAN_XILINXCAN` | `xilinx_can` | точное имя в Linux 6.6.155; требует также CAN core |
 | FPGA Manager (динамическая загрузка PL) | `CONFIG_FPGA`, `CONFIG_FPGA_MGR_ZYNQ_FPGA` | `zynq-fpga` | см. [6.5](#65-динамическая-загрузка-pl-из-linux-fpga-manager) |
 | UIO для своей PL-периферии | `CONFIG_UIO`, `CONFIG_UIO_PDRV_GENIRQ` | `uio_pdrv_genirq` | см. [6.6](#66-uio-для-собственной-pl-периферии) |
 | DMA-буферы для PL (AXI DMA/VDMA и т.п.) | `CONFIG_CMA`, `CONFIG_DMA_CMA` | — | размер области — `CONFIG_CMA_SIZE_MBYTES` либо параметр ядра `cma=` |
 
 Не включайте всё сразу "про запас" — лишние драйверы увеличивают время сборки и размер `modules`; включайте то, что реально распаяно/подключено на вашей плате и описано в её Device Tree ([раздел 5](#5-device-tree)).
+
+Для загрузки ext4-rootfs **без initramfs** также нужны встроенные (`=y`) `CONFIG_MMC`, `CONFIG_MMC_BLOCK`, `CONFIG_MMC_SDHCI`, `CONFIG_MMC_SDHCI_PLTFM`, `CONFIG_EXT4_FS` и их зависимости; для консоли — `CONFIG_SERIAL_XILINX_PS_UART_CONSOLE=y`. В проверенном Linux 6.6.155 `multi_v7_defconfig` эти опции уже включены, но проверяйте итоговый `.config` после своих изменений.
+
+При минимизации ядра для Alpine/OpenRC не убирайте `CONFIG_POSIX_TIMERS=y` и (для совместимости со старым 32-битным time ABI) `CONFIG_COMPAT_32BIT_TIME=y`: без поддержки времени OpenRC `swclock`/`settimeofday` могут завершаться с `Function not implemented`. Нужны также `CONFIG_PROC_FS=y`, `CONFIG_SYSFS=y`, `CONFIG_TMPFS=y`, `CONFIG_DEVTMPFS=y` и `CONFIG_BINFMT_ELF=y`. Если используется штатный OpenRC-сервис BusyBox mdev, записывающий `/sbin/mdev` в `/proc/sys/kernel/hotplug`, включите `CONFIG_UEVENT_HELPER=y`; без него этого sysctl нет. Альтернатива — настроенный netlink-демон mdev/udev вместо legacy hotplug helper, но это требует соответствующих изменений userspace, а не одного отключения опции.
+
+Для запуска всей Alpine rootfs как initramfs с `swclock` сохраните `CONFIG_INITRAMFS_PRESERVE_MTIME=y`. Без него потерянный mtime `/sbin/openrc-run` может вызвать `settimeofday: Invalid argument` у `swclock` и не дать запуститься `syslog` (см. [проверку QEMU](Deployment.md#2-проверка-в-qemu-без-реальной-платы)). Это не требуется для сохранения меток обычного ext4-корня на SD.
 
 ### 6.4 Сборка образов
 
@@ -225,7 +243,7 @@ make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- UIMAGE_LOADADDR=0x8000 -j"$(npr
 - `modules` — все `CONFIG_*=m` драйверы, устанавливаются в rootfs отдельной командой ([раздел 7](#7-модули-ядра-в-rootfs));
 - `dtbs` — все `.dtb` из `arch/arm/boot/dts/`, включая нужный `zynq-<board>.dtb`.
 
-Если U-Boot собран без поддержки `bootz`/сжатого zImage — соберите `zImage` вместо `uImage` (без `UIMAGE_LOADADDR`) и грузите его командой `bootz` ([раздел 9](#9-параметры-и-сценарии-загрузки-u-boot), вариант 3).
+Если U-Boot собран **с** `CONFIG_CMD_BOOTZ=y`, можно собрать `zImage` вместо `uImage` (без `UIMAGE_LOADADDR`) и грузить его командой `bootz` ([раздел 9](#9-параметры-и-сценарии-загрузки-u-boot), вариант 3). Без поддержки `bootz` этот вариант не работает: используйте `uImage` и загрузчик с `bootm`/поддержкой legacy image либо включите нужные опции. Для Linux 6.6.155 DTB платы лежит, например, в `arch/arm/boot/dts/xilinx/zynq-zybo-z7.dtb`; скопируйте его на FAT под именем `devicetree.dtb`, используемым ниже.
 
 ### 6.5 Динамическая загрузка PL из Linux (FPGA Manager)
 
@@ -236,19 +254,17 @@ CONFIG_FPGA=y
 CONFIG_FPGA_MGR_ZYNQ_FPGA=y
 ```
 
-После загрузки системы битстрим (сконвертированный в `.bin` без заголовка bootgen, например через Vivado `write_bitstream -bin_file design.bit`) заливается так:
+**В mainline Linux 6.6.155 нет атрибута `/sys/class/fpga_manager/fpga0/firmware`**: FPGA Manager экспортирует только `name`, `state`, `status`. Простая запись имени файла в `firmware` не загружает PL. Загрузка вызывается из kernel-драйвера через `fpga_mgr_load()` либо инфраструктурой FPGA Region/Device Tree overlays, если конкретное дерево ядра и платформа предоставляют способ их применения. Наличие userspace/configfs-интерфейса нельзя предполагать для mainline; в vendor-ядрах оно зависит от версии и патчей.
 
-```sh
-cp design.bin /lib/firmware/
-echo design.bin > /sys/class/fpga_manager/fpga0/firmware
-cat /sys/class/fpga_manager/fpga0/state   # ожидаем "operating"
-```
+Битстрим и его byte order должны соответствовать драйверу: `drivers/fpga/zynq-fpga.c` проверяет sync word и требует byte-swapped `.bin`, без контейнера `BOOT.BIN`. Конвертацию и применение overlay сверяйте с документацией используемого Vivado/vendor-ядра. После успешно выполненной загрузки состояние можно читать командой `cat /sys/class/fpga_manager/fpga0/state` (ожидается `operating`). Команда Vivado лишь создаёт битстрим и не предоставляет Linux-интерфейс загрузки.
 
 Для partial reconfiguration и деталей API — `Documentation/driver-api/fpga/fpga-mgr.rst` в дереве ядра.
 
 ### 6.6 UIO для собственной PL-периферии
 
 Если в PL стоит собственное IP-ядро без штатного драйвера в апстриме, необязательно писать kernel-модуль: `CONFIG_UIO_PDRV_GENIRQ` (`drivers/uio/uio_pdrv_genirq.c`) мэпит регистры устройства, описанного в Device Tree, в `/dev/uioN`, дальше с ним работают из userspace через `mmap()`. Требуются `CONFIG_UIO=y` и `CONFIG_UIO_PDRV_GENIRQ=y`; синтаксис описания узла в DT — `Documentation/driver-api/uio-howto.rst` в дереве ядра.
+
+В mainline таблица OF-match этого generic-драйвера задаётся параметром `of_id`. Для узла с `compatible = "generic-uio"` при встроенном драйвере добавьте `uio_pdrv_genirq.of_id=generic-uio` в `bootargs`; при модуле используйте `modprobe uio_pdrv_genirq of_id=generic-uio`. Один только DT-узел без этого параметра не обеспечивает привязку драйвера.
 
 ### 6.7 Пересборка после изменений
 
@@ -273,19 +289,23 @@ make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- UIMAGE_LOADADDR=0x8000 -j"$(npr
 
 ## 7. Модули ядра в rootfs
 
+Следующая команда выполняется **из родительского каталога**, содержащего `linux/` (после сборки внутри `linux` сначала `cd ..`). `ROOTFS` должен быть непустым абсолютным путём к подготовленной целевой rootfs, не `/`:
+
 ```bash
+: "${ROOTFS:?задайте абсолютный путь к целевой rootfs}"
+sudo apt-get install kmod   # host depmod для modules_install
 sudo make -C linux ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- \
     INSTALL_MOD_PATH="$ROOTFS" modules_install
 ```
 
 ## 8. Сборка BOOT.BIN (bootgen)
 
-> Этот шаг нужен только для **FSBL-пути** ([раздел 4.2](#42-fsbl-или-spl-два-пути-к-первой-стадии-загрузки)). Если U-Boot собирался со своим SPL — `BOOT.BIN` уже готов как `spl/boot.bin`, `bootgen` не требуется, переходите сразу к [разделу 1 страницы «Развёртывание и первая загрузка»](Deployment.md#1-перенос-rootfs-и-загрузочных-файлов-на-sd-карту).
+> Этот шаг нужен только для **FSBL-пути** ([раздел 4.2](#42-fsbl-или-spl-два-пути-к-первой-стадии-загрузки)). Если U-Boot собирался со своим SPL — `bootgen` не требуется: скопируйте `spl/boot.bin` как `BOOT.BIN` **и отдельный `u-boot.img`** на FAT ([4.4](#44-сборка)), затем переходите к [разделу 1 страницы «Развёртывание и первая загрузка»](Deployment.md#1-перенос-rootfs-и-загрузочных-файлов-на-sd-карту).
 
 `BOOT.BIN` — это FSBL (+опционально битстрим PL) + U-Boot, упакованные утилитой `bootgen` (входит в состав Vitis/Vivado). Файл `boot.bif`:
 
 ```
-image : {
+the_ROM_image : {
     [bootloader] fsbl.elf
     u-boot.elf
 }
@@ -301,14 +321,14 @@ bootgen -image boot.bif -arch zynq -o BOOT.BIN -w on
 
 Ключевые параметры ядра в `bootargs`: консоль на `ttyPS0` и корень на втором разделе SD-карты с `rootwait` (ядро должно подождать, пока SD-контроллер проинициализируется, иначе получите панику "unable to mount root fs").
 
-**Вариант 1 — `uEnv.txt`** (простой, читается автоматически, если U-Boot собран с `CONFIG_DISTRO_DEFAULTS`/поддержкой uEnv):
+**Вариант 1 — `uEnv.txt`** (только если окружение вашей платы явно импортирует этот файл и запускает `uenvcmd`; один `CONFIG_DISTRO_DEFAULTS` этого **не гарантирует**, в проверенном mainline Zynq v2026.04 такого автоматического импорта нет):
 
 ```
 bootargs=console=ttyPS0,115200 root=/dev/mmcblk0p2 rw rootwait
 uenvcmd=fatload mmc 0 0x03000000 uImage; fatload mmc 0 0x02A00000 devicetree.dtb; bootm 0x03000000 - 0x02A00000
 ```
 
-**Вариант 2 — `boot.scr`** (рекомендуется — работает с любой сборкой U-Boot без доп. конфигов):
+**Вариант 2 — `boot.scr`** (рекомендуется для проверенного `xilinx_zynq_virt_defconfig`; требуются `CONFIG_CMD_SOURCE`, MMC/FAT, `bootm` и поддержка формата образа, а автоматический запуск зависит от `bootcmd`/distro-окружения — не от одного наличия файла):
 
 `boot.cmd`:
 ```
@@ -322,6 +342,13 @@ bootm 0x03000000 - 0x02A00000
 mkimage -A arm -O linux -T script -C none -a 0 -e 0 -n "boot script" -d boot.cmd boot.scr
 ```
 
+Если автозапуск не настроен, выполните в консоли U-Boot (FAT на `mmc 0:1`, адрес должен быть свободен):
+
+```
+fatload mmc 0:1 ${scriptaddr} boot.scr
+source ${scriptaddr}
+```
+
 **Вариант 3 — если собирали `zImage` вместо `uImage`** (без `mkimage`-обёртки, команда `bootz` вместо `bootm`):
 
 ```
@@ -331,7 +358,7 @@ setenv bootargs console=ttyPS0,115200 root=/dev/mmcblk0p2 rw rootwait
 bootz 0x02000000 - 0x02A00000
 ```
 
-Адреса загрузки (`0x02000000` и т.д.) — произвольные адреса в DDR, лишь бы не пересекались и укладывались в объём памяти платы; приведённые значения — устоявшаяся практика в community-гайдах по Zynq и безопасны "из коробки".
+Адреса загрузки (`0x02000000` и т.д.) — примеры, а не гарантия безопасности: проверьте объём DDR, размеры ядра/DTB/initramfs, область распаковки ядра и память, занятую U-Boot (`bdinfo`). Особенно не допускайте пересечения загруженного zImage и DTB. Номер `mmc 0:1`, `root=/dev/mmcblk0p2` и `ttyPS0` также сверяйте с вашей платой/DT и фактическим порядком контроллеров.
 
 ---
 

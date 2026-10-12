@@ -13,15 +13,20 @@
 Важно копировать rootfs с сохранением владельца, прав и спецфайлов (`cp -r` без флагов для этого **не годится**):
 
 ```bash
-mkdir -p /mnt/boot /mnt/root
-sudo mount "${SDCARD}1" /mnt/boot     # для mmcblk: "${SDCARD}p1"
-sudo mount "${SDCARD}2" /mnt/root     # для mmcblk: "${SDCARD}p2"
+sudo mkdir -p /mnt/boot /mnt/root
+# BOOT_PART и ROOT_PART заданы при разметке (см. «Сборка rootfs»).
+: "${BOOT_PART:?Укажите раздел FAT32}" "${ROOT_PART:?Укажите раздел ext4}"
+sudo mount "$BOOT_PART" /mnt/boot
+sudo mount "$ROOT_PART" /mnt/root
 
-sudo rsync -aHAX --numeric-ids "$ROOTFS"/ /mnt/root/
+# До копирования размонтируйте псевдо-ФС chroot: иначе rsync скопирует хостовые /dev, /proc, /sys.
+sudo rsync -aHAX --numeric-ids --one-file-system "$ROOTFS"/ /mnt/root/
 
 sudo cp BOOT.BIN               /mnt/boot/
+# Только для варианта SPL: второй этап обязателен (не требуется для FSBL BOOT.BIN с включённым u-boot.elf).
+# sudo cp u-boot/u-boot.img /mnt/boot/
 sudo cp linux/arch/arm/boot/uImage /mnt/boot/          # или zImage
-sudo cp linux/arch/arm/boot/dts/zynq-zybo-z7.dtb /mnt/boot/devicetree.dtb
+sudo cp linux/arch/arm/boot/dts/xilinx/zynq-zybo-z7.dtb /mnt/boot/devicetree.dtb
 sudo cp boot.scr               /mnt/boot/               # см. «Загрузочная цепочка», раздел 9
 
 sync
@@ -35,20 +40,27 @@ sudo umount /mnt/boot /mnt/root
 QEMU умеет эмулировать Zynq-7000 нативно (машина `xilinx-zynq-a9`: Cortex-A9, Cadence UART/GEM/SDHCI, DDR и т.д.) — удобно проверить, что rootfs и ядро в принципе поднимаются, ещё до прошивки на плату:
 
 ```bash
-sudo apt-get install -y qemu-system-arm
+sudo apt-get install -y qemu-system-arm cpio gzip
 
 # Быстрая проверка через initrd (без эмуляции SD-карты):
-( cd "$ROOTFS" && find . | cpio -o -H newc | gzip > ../rootfs.cpio.gz )
+# Выполнять после размонтирования /proc, /sys, /dev в rootfs.
+# bash pipefail не позволяет скрыть ошибку find/cpio за успешным gzip.
+set -o pipefail
+sudo bash -o pipefail -c 'cd "$1"; find . -xdev -print0 | cpio --null -o -H newc' _ "$ROOTFS" | gzip -n > rootfs.cpio.gz
 
 qemu-system-arm -M xilinx-zynq-a9 -m 1G \
-    -serial mon:stdio -nographic \
-    -dtb linux/arch/arm/boot/dts/zynq-zc702.dtb \
+    -serial null -serial mon:stdio -nographic \
+    -dtb linux/arch/arm/boot/dts/xilinx/zynq-zc702.dtb \
     -kernel linux/arch/arm/boot/zImage \
     -initrd rootfs.cpio.gz \
-    -append "console=ttyPS0,115200 root=/dev/ram rw earlyprintk"
+    -append "console=ttyPS0,115200 rdinit=/sbin/init rw earlycon"
 ```
 
-Обратите внимание: для эмуляции в примере используется `zynq-zc702.dtb` (плата, которую знает сама QEMU-модель) — это нормально для проверки базовой ОС/rootfs, но специфичная для вашей реальной платы PL-периферия таким способом не тестируется. Выход — `Ctrl+A`, затем `X`.
+Это **cpio initramfs**, не блочный ramdisk: параметр `root=/dev/ram` не нужен. В ядре обязательны `CONFIG_BLK_DEV_INITRD=y` и `CONFIG_RD_GZIP=y`; память должна вмещать распакованную rootfs. Для теста без SD-карты уберите только в копии rootfs записи `/dev/mmcblk0p1`/`p2` из fstab — на плате они нужны. Настройте тестовый пароль через `passwd` в chroot, не оставляйте его в производственном образе.
+
+Для initramfs с OpenRC `swclock` оставьте также `CONFIG_INITRAMFS_PRESERVE_MTIME=y`: без него ядро заменяет временные метки файлов на раннее время загрузки. При отсутствии сохранённого `/var/lib/misc/openrc-shutdowntime` служба использует mtime `/sbin/openrc-run`; попытка выставить слишком раннее время может дать `Invalid argument` и заблокировать зависимый `syslog`. Это воспроизведено в QEMU и устранено пересборкой ядра с сохранением mtime; сам `cpio` уже содержит правильные метки.
+
+Обратите внимание: `zynq-zc702.dtb` выбирает **UART1**, тогда как первый `-serial` в QEMU соответствует UART0. Поэтому сначала указан `-serial null`, затем консоль второго UART: без этого исправления окно может оставаться пустым при работающем ядре. Это проверяет базовую ОС/rootfs, но не специфичную для вашей реальной платы PL-периферию. Выход — `Ctrl+A`, затем `X`.
 
 Более простая и уже пройденная проверка — то, что вы уже делали в [разделе 3 страницы «Подготовка хоста»](Host-Build-Environment.md#3-chroot-окружение-qemu-user-static--binfmt_misc): если внутри chroot (через `qemu-arm-static`) команды вроде `apk`, `passwd`, `ls` отрабатывают без `Illegal instruction`/`exec format error`, значит сама rootfs собрана под правильную архитектуру и в целом работоспособна.
 

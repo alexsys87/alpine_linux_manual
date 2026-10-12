@@ -24,10 +24,11 @@ sudo apt-get install -y \
     parted dosfstools e2fsprogs util-linux \
     device-tree-compiler u-boot-tools \
     gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf \
-    bc bison flex libssl-dev libncurses-dev python3 swig
+    bc bison flex libssl-dev libncurses-dev python3 swig \
+    cpio gzip bzip2 cmake pkg-config file
 ```
 
-На **Alpine в роли хоста**: `apk add build-base git wget curl tar xz rsync qemu-arm parted dosfstools e2fsprogs util-linux dtc u-boot-tools gcc-arm-none-eabi bc bison flex openssl-dev ncurses-dev python3`, плюс ручная регистрация `binfmt_misc` (на Alpine нет `binfmt-support`, действие описано в [разделе 3](#3-chroot-окружение-qemu-user-static--binfmt_misc)).
+Команды пакетов выше проверяются на Debian/Ubuntu. Для **Alpine-хоста** нужен отдельный набор и Linux ARM-кросс-компилятор: `gcc-arm-none-eabi` предназначен для bare-metal и не является заменой `arm-linux-gnueabihf-` во всех шагах. Обычный динамический `qemu-arm` также не равнозначен `qemu-arm-static` для chroot. Выберите статический QEMU и подходящий Linux-тулчейн либо используйте подготовленный Debian/Ubuntu-хост; Alpine/Fedora-варианты здесь не проверялись сборкой.
 
 ### 1.2 Целевое оборудование
 
@@ -66,16 +67,21 @@ sudo update-binfmts --enable qemu-arm
 На хостах без `binfmt-support` (например, Alpine) регистрацию делают вручную через `/proc/sys/fs/binfmt_misc/register` — самый надёжный способ это сделать одной командой:
 
 ```bash
-docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
-# или, без Docker:
-# echo ':qemu-arm:M::\x7fELF\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x28\x00:\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:/usr/bin/qemu-arm-static:F' > /proc/sys/fs/binfmt_misc/register
+docker run --rm --privileged multiarch/qemu-user-static -p yes
+# Не используйте --reset без необходимости: он удаляет другие binfmt-регистрации.
+# Для регистрации без Docker используйте printf, не echo:
+# sudo mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc  # если ещё не смонтировано
+# printf '%b\n' ':qemu-arm:M::\x7fELF\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x28\x00:\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:/usr/bin/qemu-arm-static:F' | sudo tee /proc/sys/fs/binfmt_misc/register > /dev/null
 ```
 
-Копируем статический интерпретатор внутрь rootfs (он должен физически лежать там, куда указывает `chroot`, иначе после `chroot` хост не сможет его найти):
+Флаг `F` в binfmt-регистрации удерживает открытый интерпретатор, поэтому при такой регистрации копия внутри chroot не обязательна. Ниже копируем её для совместимости с регистрациями без `F` и прямого запуска QEMU:
 
 ```bash
 ROOTFS=~/alpine-zynq/rootfs
-sudo cp "$(command -v qemu-arm-static)" "$ROOTFS/usr/bin/"
+QEMU_BIN="$(command -v qemu-arm-static)"
+test -n "$QEMU_BIN" || { echo "Нет qemu-arm-static"; exit 1; }
+sudo cp "$QEMU_BIN" "$ROOTFS/usr/bin/"
+sudo cp -L /etc/resolv.conf "$ROOTFS/etc/resolv.conf"
 ```
 
 Монтируем псевдо-ФС и заходим в chroot:
@@ -84,6 +90,7 @@ sudo cp "$(command -v qemu-arm-static)" "$ROOTFS/usr/bin/"
 sudo mount -t proc none "$ROOTFS/proc"
 sudo mount -t sysfs none "$ROOTFS/sys"
 sudo mount -o bind /dev "$ROOTFS/dev"
+sudo mount --make-private "$ROOTFS/dev"
 sudo mount -o bind /dev/pts "$ROOTFS/dev/pts"
 
 sudo chroot "$ROOTFS" /bin/sh
