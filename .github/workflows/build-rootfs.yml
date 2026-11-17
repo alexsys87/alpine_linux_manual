@@ -2,6 +2,7 @@ name: Build rootfs
 
 on:
   workflow_dispatch:
+  workflow_call:
   push:
     tags: ['v*']
 

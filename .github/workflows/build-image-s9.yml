@@ -1,0 +1,77 @@
+name: Build image (Antminer S9)
+
+# Builds rootfs, U-Boot and kernel, assembles the SquashFS + OverlayFS SD-card
+# images from those artifacts and smoke-tests them in QEMU.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write   # the called rootfs workflow may attach release files on tags
+
+jobs:
+  rootfs:
+    uses: ./.github/workflows/build-rootfs.yml
+
+  uboot:
+    uses: ./.github/workflows/build-uboot-s9.yml
+
+  kernel:
+    uses: ./.github/workflows/build-kernel-s9.yml
+
+  image:
+    needs: [rootfs, uboot, kernel]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: alpine-zynq-rootfs
+          path: artifacts/rootfs
+      - uses: actions/download-artifact@v7
+        with:
+          name: uboot-antminer-s9
+          path: artifacts/uboot
+      - uses: actions/download-artifact@v7
+        with:
+          name: kernel-antminer-s9
+          path: artifacts/kernel
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y squashfs-tools cpio gzip u-boot-tools mtools \
+            dosfstools e2fsprogs fdisk qemu-system-arm
+
+      - name: Test images in QEMU (throwaway root password)
+        timeout-minutes: 30
+        run: |
+          HASH=$(openssl passwd -6 citest)
+          for mode in tmpfs persistent; do
+            sudo env "ROOT_PASSWORD_HASH=$HASH" "MODE=$mode" "OUT=$PWD/test/$mode" \
+              "ROOTFS_TAR=$PWD/artifacts/rootfs/alpine-zynq-rootfs.tar.gz" \
+              "KERNEL_DIR=$PWD/artifacts/kernel" "UBOOT_DIR=$PWD/artifacts/uboot" \
+              sh scripts/build-image-antminer-s9.sh
+            sudo python3 scripts/test-image-qemu.py \
+              "test/$mode/alpine-zynq-s9-$mode.img" artifacts/kernel/zImage \
+              artifacts/kernel/devicetree.dtb "test/$mode/initramfs.cpio.gz" \
+              "$mode" citest
+          done
+
+      - name: Build release images (root password locked)
+        run: |
+          for mode in tmpfs persistent; do
+            sudo env "MODE=$mode" "OUT=$PWD/images/$mode" \
+              "ROOTFS_TAR=$PWD/artifacts/rootfs/alpine-zynq-rootfs.tar.gz" \
+              "KERNEL_DIR=$PWD/artifacts/kernel" "UBOOT_DIR=$PWD/artifacts/uboot" \
+              sh scripts/build-image-antminer-s9.sh
+            gzip -9 "images/$mode/alpine-zynq-s9-$mode.img"
+          done
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: alpine-zynq-s9-images
+          path: |
+            images/tmpfs/alpine-zynq-s9-tmpfs.img.gz
+            images/persistent/alpine-zynq-s9-persistent.img.gz

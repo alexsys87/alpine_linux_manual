@@ -74,7 +74,7 @@ chroot "$ROOTFS" /bin/sh -ec '
     apk update
     apk upgrade
     apk add e2fsprogs e2fsprogs-extra dosfstools parted util-linux kmod \
-        openssh chrony tzdata nano less iproute2 iptables
+        busybox-static openssh chrony tzdata nano less iproute2 iptables
     for svc in devfs dmesg mdev hwdrivers; do rc-update add "$svc" sysinit; done
     for svc in fsck root localmount hostname bootmisc hwclock modules sysctl syslog; do
         rc-update add "$svc" boot

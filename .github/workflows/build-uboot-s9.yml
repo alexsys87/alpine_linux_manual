@@ -2,6 +2,7 @@ name: Build U-Boot (Antminer S9)
 
 on:
   workflow_dispatch:
+  workflow_call:
   push:
     paths:
       - 'scripts/build-uboot-antminer-s9.sh'
