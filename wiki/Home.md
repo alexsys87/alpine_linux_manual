@@ -28,6 +28,7 @@
 9. [Скрипт сборки rootfs](Build-Script.md) — единый shell-скрипт, автоматизирующий bootstrap и настройку rootfs.
     - Дополнительно: [U-Boot для Antminer S9](Antminer-S9-U-Boot.md) — сборка U-Boot для платы Antminer S9 (заодно проверка инструкции).
     - Дополнительно: [Ядро Linux для Antminer S9](Antminer-S9-Kernel.md) — сборка ядра и Device Tree для той же платы.
+    - Дополнительно: [Готовый образ SquashFS + OverlayFS для S9](SquashFS-OverlayFS.md#14-готовый-образ-для-antminer-s9-скрипт-и-ci) — скрипт сборки образа из артефактов и тест в QEMU.
 10. [Диагностика](Troubleshooting.md) — типичные проблемы загрузки и работы системы на плате, ссылки на тематические таблицы ошибок.
 11. [Источники и ссылки](References.md) — документация Alpine, AMD/Xilinx, U-Boot, ядра Linux и QEMU.
 

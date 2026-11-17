@@ -2,6 +2,7 @@ name: Build kernel (Antminer S9)
 
 on:
   workflow_dispatch:
+  workflow_call:
   push:
     paths:
       - 'kernel/antminer-s9/**'

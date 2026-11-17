@@ -17,7 +17,8 @@
 11. [Альтернатива: штатный diskless-режим Alpine](#11-альтернатива-штатный-diskless-режим-alpine)
 12. [Обновление образа](#12-обновление-образа)
 13. [Типичные ошибки](#13-типичные-ошибки)
-14. [Источники и ссылки](#14-источники-и-ссылки)
+14. [Готовый образ для Antminer S9: скрипт и CI](#14-готовый-образ-для-antminer-s9-скрипт-и-ci)
+15. [Источники и ссылки](#15-источники-и-ссылки)
 
 ## 1. О документе и зачем это нужно
 
@@ -279,7 +280,40 @@ mount --bind /mnt/data/var-lib-myapp /var/lib/myapp
 | `Kernel panic - not syncing: Attempted to kill init` сразу после `switch_root` | В squashfs нет `/sbin/init` — скорее всего, в `mksquashfs` (раздел 6) попал не тот каталог | Проверить содержимое `$ROOTFS` перед сборкой образа |
 | `apk add` и обычная работа с пакетами не работают | Read-only тут ни при чём — overlay сам по себе полностью доступен на запись; ищите обычные причины (сеть, репозитории) как на странице [«Диагностика»](Troubleshooting.md#1-проблемы-загрузки-и-работы-системы-на-плате) | — |
 
-## 14. Источники и ссылки
+## 14. Готовый образ для Antminer S9: скрипт и CI
+
+Шаги разделов 5–8 автоматизированы скриптом `scripts/build-image-antminer-s9.sh`: он собирает образ SD-карты **из готовых артефактов**, ничего не компилируя.
+
+| Вход | Откуда |
+|---|---|
+| `ROOTFS_TAR` — `alpine-zynq-rootfs.tar.gz` | [скрипт rootfs](Build-Script.md); в нём должен быть пакет `busybox-static` (он добавлен в список пакетов скрипта) |
+| `KERNEL_DIR` — `zImage`, `devicetree.dtb`, `modules.tar.gz` | [ядро для S9](Antminer-S9-Kernel.md) |
+| `UBOOT_DIR` — `BOOT.BIN`, `u-boot.img` | [U-Boot для S9](Antminer-S9-U-Boot.md) |
+
+```bash
+sudo apt-get install -y squashfs-tools cpio gzip u-boot-tools mtools dosfstools e2fsprogs fdisk
+sudo MODE=tmpfs ROOTFS_TAR=... KERNEL_DIR=... UBOOT_DIR=... sh scripts/build-image-antminer-s9.sh
+```
+
+`MODE=tmpfs` (по умолчанию) — вариант A, `MODE=persistent` — вариант B с третьим ext4-разделом. Дополнительно: `BOOT_SIZE_MIB` (64), `DATA_SIZE_MIB` (128), `OUT`, `CONSOLE`, `ROOT_PASSWORD_HASH` (хеш по `openssl passwd -6`; без него root остаётся заблокированным). Скрипт делает всё без loop-устройств (отдельные файлы разделов собираются через `mkfs.vfat`/`mcopy`/`mke2fs` и записываются в образ через `dd`), но запускается от root, чтобы сохранить владельцев файлов rootfs. Результат — `alpine-zynq-s9-<режим>.img`: запишите его на SD-карту целиком (`dd` или balenaEtcher).
+
+Внутри образа: `BOOT.BIN`, `u-boot.img`, `zImage`, `devicetree.dtb`, `uInitrd` и `boot.scr` на FAT-разделе; SquashFS (zstd, блок 256K) с запасом 20 % на разделе 2; при `persistent` — ext4 на разделе 3. `boot.scr` использует адреса из штатного окружения U-Boot для S9 (`kernel_addr_r`, `fdt_addr_r`, `ramdisk_addr_r`) и грузит всё через `bootz`, образ initramfs — `uInitrd`. Скрипт убирает из rootfs `qemu-arm-static`, пишет свой `fstab` без записи корня и подставляет в `/init` нужный вариант upper (вместо ручного комментирования строк из раздела 7.3).
+
+Workflow `build-image-s9.yml` (запуск вручную) собирает rootfs, U-Boot и ядро существующими workflow, затем собирает оба образа и **прогоняет их в QEMU** скриптом `scripts/test-image-qemu.py`. Для проверки собирается отдельная копия с временным паролем root; опубликованные образы (artifact `alpine-zynq-s9-images`, `*.img.gz`) собираются без пароля.
+
+### Что проверено
+
+| Проверка | Результат |
+|---|---|
+| Ядро `v6.6.155` + фрагмент (`SQUASHFS`, `SQUASHFS_ZSTD`, `OVERLAY_FS`, `BLK_DEV_INITRD` и др.) | собирается; `OVERLAY_FS` и `SQUASHFS_ZSTD` в `multi_v7_defconfig` по умолчанию **выключены** — без фрагмента ядро не смонтирует такой корень |
+| Сборка образов обоих режимов | образы собираются; `/init` из раздела 7.3 в таком виде работает |
+| Загрузка в QEMU (`xilinx-zynq-a9`, ядро и initramfs подаются напрямую, образ — как SD-карта) на тестовом ARM-rootfs (статический BusyBox) | `/` — overlay (`lowerdir=/mnt/lower`), нижний слой — read-only squashfs, запись попадает в upper; tmpfs: файл исчезает после перезагрузки, persistent: сохраняется |
+| Загрузка полного Alpine rootfs из CI | см. результат workflow `build-image-s9.yml` |
+| `boot.scr` и загрузка через U-Boot, запуск на плате S9 | **не проверялось** (QEMU не эмулирует ни U-Boot, ни саму S9) |
+
+Замечания по результатам проверки: образ для QEMU приходится дополнять до степени двойки (тестовый скрипт делает это сам на временной копии); `sync` перед отключением питания обязателен даже в persistent-режиме.
+
+## 15. Источники и ссылки
 
 - Kernel docs — Overlay Filesystem: https://docs.kernel.org/filesystems/overlayfs.html
 - SquashFS-tools (исходники, документация по опциям mksquashfs): https://github.com/plougher/squashfs-tools
