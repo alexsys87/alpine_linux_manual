@@ -10,7 +10,8 @@ permissions:
 
 jobs:
   rootfs:
-    runs-on: ubuntu-latest
+    # Pinned: newer images may no longer ship the qemu-user-static package.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -18,6 +19,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y qemu-user-static binfmt-support wget
+          # Fail early if ARM emulation is not available.
+          command -v qemu-arm-static
+          ls /proc/sys/fs/binfmt_misc/ | grep -i arm
 
       - name: Build rootfs
         run: sudo sh scripts/build-alpine-zynq-rootfs.sh
