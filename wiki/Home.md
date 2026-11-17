@@ -26,6 +26,7 @@
 7. [Сборка пакетов](Packaging.md) — собственные `.apk` через `abuild`: пользователь `builder`, ключи подписи, анатомия `APKBUILD`, подпакеты, публикация репозитория и деплой на плату.
 8. [SquashFS + OverlayFS](SquashFS-OverlayFS.md) — неизменяемый корень: опции ядра, сборка SquashFS-образа, кастомный initramfs и `/init`, stateless- и persistent-режимы, загрузка через U-Boot.
 9. [Скрипт сборки rootfs](Build-Script.md) — единый shell-скрипт, автоматизирующий bootstrap и настройку rootfs.
+    - Дополнительно: [U-Boot для Antminer S9](Antminer-S9-U-Boot.md) — сборка U-Boot для платы Antminer S9 (заодно проверка инструкции).
 10. [Диагностика](Troubleshooting.md) — типичные проблемы загрузки и работы системы на плате, ссылки на тематические таблицы ошибок.
 11. [Источники и ссылки](References.md) — документация Alpine, AMD/Xilinx, U-Boot, ядра Linux и QEMU.
 
