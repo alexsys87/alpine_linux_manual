@@ -17,7 +17,8 @@
 11. [Альтернатива: штатный diskless-режим Alpine](#11-альтернатива-штатный-diskless-режим-alpine)
 12. [Обновление образа](#12-обновление-образа)
 13. [Типичные ошибки](#13-типичные-ошибки)
-14. [Источники и ссылки](#14-источники-и-ссылки)
+14. [Запуск образа в QEMU без платы](#14-запуск-образа-в-qemu-без-платы)
+15. [Источники и ссылки](#15-источники-и-ссылки)
 
 ## 1. О документе и зачем это нужно
 
@@ -279,7 +280,53 @@ mount --bind /mnt/data/var-lib-myapp /var/lib/myapp
 | `Kernel panic - not syncing: Attempted to kill init` сразу после `switch_root` | В squashfs нет `/sbin/init` — скорее всего, в `mksquashfs` (раздел 6) попал не тот каталог | Проверить содержимое `$ROOTFS` перед сборкой образа |
 | `apk add` и обычная работа с пакетами не работают | Read-only тут ни при чём — overlay сам по себе полностью доступен на запись; ищите обычные причины (сеть, репозитории) как в README.md §16 | — |
 
-## 14. Источники и ссылки
+## 14. Запуск образа в QEMU без платы
+
+Образ можно запустить без платы: QEMU эмулирует обобщённую плату Zynq-7000 (машина `xilinx-zynq-a9`: Cortex-A9, Cadence UART/GEM, SDHCI), а образ подключается к ней как SD-карта. Скрипт `scripts/run-image-qemu.sh` берёт `zImage`, `devicetree.dtb` и `uInitrd` из FAT-раздела самого образа, поэтому нужен один файл — `alpine-zynq-s9-<режим>.img` (или `.img.gz` из artifact `alpine-zynq-s9-images`).
+
+```bash
+sudo apt-get install -y qemu-system-arm mtools
+sh scripts/run-image-qemu.sh alpine-zynq-s9-tmpfs.img.gz
+```
+
+Выход из эмулятора — `Ctrl+A`, затем `X`. Консоль — второй UART QEMU (`ttyPS0`, UART1), поэтому в команде QEMU первым стоит `-serial null`.
+
+| Переменная | Значение |
+|---|---|
+| `SNAPSHOT=1` (по умолчанию) | все записи отбрасываются при выходе, сам образ не меняется |
+| `SNAPSHOT=0` | записи сохраняются в копии `<образ>.qemu.img` рядом с образом (нужен распакованный `.img`); так в persistent-образе данные переживают перезапуск эмулятора |
+| `MEM_MIB=1024` | объём RAM |
+| `NET=1` | добавляет сетевую карту в режиме NAT (`-nic user`) |
+
+Что делает скрипт: достаёт из FAT-раздела (смещение 4 МиБ) `zImage`, `devicetree.dtb` и `uInitrd`, отрезает 64-байтный заголовок U-Boot у `uInitrd` (QEMU нужен «сырой» `cpio.gz`), дополняет копию карты до степени двойки (модель SD-карты в QEMU принимает только такие размеры) и запускает:
+
+```bash
+qemu-system-arm -M xilinx-zynq-a9 -m 1024 \
+    -kernel zImage -dtb devicetree.dtb -initrd initramfs.cpio.gz \
+    -append "console=ttyPS0,115200 earlycon" \
+    -drive if=sd,format=raw,file=card.img,snapshot=on \
+    -display none -monitor none -serial null -serial mon:stdio
+```
+
+После загрузки убедитесь, что корень — overlay поверх SquashFS:
+
+```sh
+mount | grep -E ' / | /mnt/lower '
+```
+
+**Вход в систему.** В опубликованных образах пароль root заблокирован, поэтому до приглашения `login:` вы дойдёте, но войти не сможете. Для интерактивной работы соберите свой образ с паролем (хеш — `openssl passwd -6`):
+
+```bash
+sudo ROOT_PASSWORD_HASH="$(openssl passwd -6)" MODE=tmpfs \
+    ROOTFS_TAR=... KERNEL_DIR=... UBOOT_DIR=... \
+    sh scripts/build-image-antminer-s9.sh
+```
+
+Автоматическая проверка (то, что делает CI): `scripts/test-image-qemu.py` загружает образ дважды и проверяет overlay, запись в upper-слой и поведение после перезагрузки (в `tmpfs` файл исчезает, в `persistent` сохраняется).
+
+**Ограничения.** QEMU не запускает U-Boot, поэтому `boot.scr`, `BOOT.BIN`, `u-boot.img` и выбор источника загрузки так не проверить. Не эмулируются и особенности самой S9: NAND, PL, платы хешбордов, реальные тайминги DDR. Эмуляция проверяет ядро, DTB, initramfs, SquashFS/OverlayFS и запуск пользовательского пространства.
+
+## 15. Источники и ссылки
 
 - Kernel docs — Overlay Filesystem: https://docs.kernel.org/filesystems/overlayfs.html
 - SquashFS-tools (исходники, документация по опциям mksquashfs): https://github.com/plougher/squashfs-tools

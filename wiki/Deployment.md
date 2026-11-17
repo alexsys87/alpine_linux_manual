@@ -64,6 +64,8 @@ qemu-system-arm -M xilinx-zynq-a9 -m 1G \
 
 Более простая и уже пройденная проверка — то, что вы уже делали в [разделе 3 страницы «Подготовка хоста»](Host-Build-Environment.md#3-chroot-окружение-qemu-user-static--binfmt_misc): если внутри chroot (через `qemu-arm-static`) команды вроде `apk`, `passwd`, `ls` отрабатывают без `Illegal instruction`/`exec format error`, значит сама rootfs собрана под правильную архитектуру и в целом работоспособна.
 
+Готовый образ SD-карты для Antminer S9 (SquashFS + OverlayFS) запускается в QEMU одной командой — см. [«Запуск образа в QEMU без платы»](SquashFS-OverlayFS.md#запуск-образа-в-qemu-без-платы).
+
 ## 3. Первая загрузка платы
 
 1. Вставьте SD-карту, подключите UART-переходник, откройте терминал на **115200 8N1**.
