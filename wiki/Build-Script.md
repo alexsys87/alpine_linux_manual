@@ -14,7 +14,7 @@ sudo sh scripts/build-alpine-zynq-rootfs.sh
 
 ## Сборка в GitHub Actions (без WSL)
 
-Workflow [`.github/workflows/build-rootfs.yml`](../.github/workflows/build-rootfs.yml) запускает тот же скрипт на `ubuntu-latest` (с `qemu-user-static` и binfmt) и публикует `alpine-zynq-rootfs.tar.gz` как artifact; при push тега `v*` архив прикрепляется к релизу. Запуск вручную: вкладка Actions → Build rootfs → Run workflow. Архив распаковывайте от root: `sudo tar --numeric-owner -xzf alpine-zynq-rootfs.tar.gz -C /mnt/rootfs`.
+Workflow [`.github/workflows/build-rootfs.yml`](../.github/workflows/build-rootfs.yml) запускает тот же скрипт на `ubuntu-24.04` (с `qemu-user-static` и binfmt) и публикует `alpine-zynq-rootfs.tar.gz` как artifact; при push тега `v*` архив прикрепляется к релизу. Запуск вручную: вкладка Actions → Build rootfs → Run workflow. Архив распаковывайте от root: `sudo tar --numeric-owner -xzf alpine-zynq-rootfs.tar.gz -C /mnt/rootfs`.
 
 `WORKDIR` должен быть отдельным каталогом сборки. Для другой архитектуры задайте `ARCH=armhf`; меняйте ветку Alpine только после проверки совместимости. Если на плате нет RTC, замените `hwclock` на `swclock`. Не запускайте службы платы внутри chroot. Скрипт не задаёт пароль и не настраивает разрешение входа root по SSH: это отдельный осознанный выбор пользователя.
 
