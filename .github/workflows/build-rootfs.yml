@@ -1,0 +1,45 @@
+name: Build rootfs
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  rootfs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install QEMU user-mode and binfmt
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-user-static binfmt-support wget
+
+      - name: Build rootfs
+        run: sudo sh scripts/build-alpine-zynq-rootfs.sh
+
+      - name: Pack rootfs
+        run: |
+          # Root + numeric-owner preserves uid/gid and permissions.
+          sudo tar --numeric-owner -C alpine-zynq-build/rootfs \
+            -czf alpine-zynq-rootfs.tar.gz .
+          sha256sum alpine-zynq-rootfs.tar.gz | tee alpine-zynq-rootfs.tar.gz.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: alpine-zynq-rootfs
+          path: |
+            alpine-zynq-rootfs.tar.gz
+            alpine-zynq-rootfs.tar.gz.sha256
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            alpine-zynq-rootfs.tar.gz
+            alpine-zynq-rootfs.tar.gz.sha256
