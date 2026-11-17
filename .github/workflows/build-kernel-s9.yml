@@ -1,0 +1,37 @@
+name: Build kernel (Antminer S9)
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'kernel/antminer-s9/**'
+      - 'scripts/build-kernel-antminer-s9.sh'
+      - '.github/workflows/build-kernel-s9.yml'
+
+jobs:
+  kernel:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential bc bison flex libssl-dev \
+            libelf-dev libncurses-dev gcc-arm-linux-gnueabihf \
+            device-tree-compiler kmod
+
+      - name: Build kernel
+        run: sh scripts/build-kernel-antminer-s9.sh
+
+      - name: Pack modules
+        run: tar -C kernel-build/out/modules -czf kernel-build/out/modules.tar.gz .
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: kernel-antminer-s9
+          path: |
+            kernel-build/out/zImage
+            kernel-build/out/devicetree.dtb
+            kernel-build/out/config
+            kernel-build/out/modules.tar.gz

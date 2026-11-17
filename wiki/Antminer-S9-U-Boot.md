@@ -37,4 +37,4 @@ sh scripts/build-uboot-antminer-s9.sh
 
 ---
 
-← [Загрузочная цепочка](Boot-Chain.md) · [Главная](Home.md)
+← [Загрузочная цепочка](Boot-Chain.md) · [Ядро для S9](Antminer-S9-Kernel.md) · [Главная](Home.md)
