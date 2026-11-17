@@ -4,7 +4,6 @@ on:
   workflow_dispatch:
   push:
     paths:
-      - 'uboot/antminer-s9/**'
       - 'scripts/build-uboot-antminer-s9.sh'
       - '.github/workflows/build-uboot-s9.yml'
 
@@ -28,5 +27,5 @@ jobs:
         with:
           name: uboot-antminer-s9
           path: |
-            uboot-build/out/u-boot.elf
-            uboot-build/out/u-boot.bin
+            uboot-build/out/BOOT.BIN
+            uboot-build/out/u-boot.img
